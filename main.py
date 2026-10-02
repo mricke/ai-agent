@@ -22,42 +22,57 @@ def main():
         api_key=api_key,
     )
 
+    token_usage = {"prompt": 0, "completion": 0}
+
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": args.user_prompt},
     ]
 
-    response = client.chat.completions.create(
-        model="openrouter/free",
-        messages=messages,
-        tools=available_functions,
-        temperature=0,
-    )
+    for api_request in range(20):
+        response = client.chat.completions.create(
+            model="openrouter/free",
+            messages=messages,
+            tools=available_functions,
+            temperature=0,
+        )
     
-    message = response.choices[0].message 
+        message = response.choices[0].message 
 
-    if response.usage == None:
-        print("No response returned from API request.")
-    elif args.verbose and response.choices[0].message.tool_calls == None:
-        print(f"User prompt: {args.user_prompt}")
-        print(f"Prompt tokens: {response.usage.prompt_tokens}")
-        print(f"Response tokens: {response.usage.completion_tokens}")
-        print(f"Response:\n{response.choices[0].message.content}")
-    elif not args.verbose and response.choices[0].message.tool_calls == None:
-        print(f"Response:\n{response.choices[0].message.content}")
-    elif args.verbose and response.choices[0].message.tool_calls:
-        print(f"User prompt: {args.user_prompt}")
-        print(f"Prompt tokens: {response.usage.prompt_tokens}")
-        print(f"Response tokens: {response.usage.completion_tokens}")
-        for tool_call in message.tool_calls:
-            function_args = json.loads(tool_call.function.arguments or "{}")
-            result_message = call_function(tool_call, verbose=True)
-            print(f"-> {result_message['content']}")
-    elif not args.verbose and response.choices[0].message.tool_calls:
-        for tool_call in message.tool_calls:
-            function_args = json.loads(tool_call.function.arguments or "{}")
-            result_message = call_function(tool_call)
-            print(f"-> {result_message['content']}")
+        if response.usage == None:
+            print("No response returned from API request.")
+            exit(1)
+        elif response.choices[0].message.tool_calls and api_request == 19 and args.verbose:
+            print("Maxed out on API requests.")
+            print(f'Prompt tokens: {token_usage["prompt"]}')
+            print(f"Response tokens: {token_usage["completion"]}")
+            exit(1)
+        elif response.choices[0].message.tool_calls and api_request == 19:
+            print("Maxed out on API requests.")
+            exit(1)
+        elif args.verbose and response.choices[0].message.tool_calls == None:
+            token_usage["prompt"] += response.usage.prompt_tokens
+            token_usage["completion"] += response.usage.completion_tokens
+            print(f"User prompt: {args.user_prompt}")
+            print(f'Prompt tokens: {token_usage["prompt"]}')
+            print(f"Response tokens: {token_usage["completion"]}")
+            print(f"Response:\n{response.choices[0].message.content}")
+            break
+        elif not args.verbose and response.choices[0].message.tool_calls == None:
+            print(f"Response:\n{response.choices[0].message.content}")
+            break
+        elif args.verbose and response.choices[0].message.tool_calls:
+            token_usage["prompt"] += response.usage.prompt_tokens
+            token_usage["completion"] += response.usage.completion_tokens
+            for tool_call in message.tool_calls:
+                function_args = json.loads(tool_call.function.arguments or "{}")
+                result_message = call_function(tool_call, verbose=True)
+                messages.append(result_message)
+        elif not args.verbose and response.choices[0].message.tool_calls:
+            for tool_call in message.tool_calls:
+                function_args = json.loads(tool_call.function.arguments or "{}")
+                result_message = call_function(tool_call)
+                messages.append(result_message)
 
 if __name__ == "__main__":
     main()
