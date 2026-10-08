@@ -1,10 +1,36 @@
 import os
 from dotenv import load_dotenv
+from pydantic import BaseModel
+import yaml
 from openai import OpenAI
 import json
 import argparse
+from prompt_toolkit import prompt
+from prompt_toolkit import PromptSession
+from prompt_toolkit.history import FileHistory
 from prompts import system_prompt
 from call_function import available_functions, call_function
+
+class AgentConfig(BaseModel):
+    model_name: str
+    base_url: str
+    api_key: str
+    working_directory: str
+    chat_log_file_path: str
+    temperature: float
+    reasoning_effort: str
+
+def write_to_chat_log(log_path: str, content: str) -> None:
+    with open(log_path, 'a') as f:
+        f.write(content)
+    f.closed
+
+def load_config(path: str) -> AgentConfig:
+    with open(path, 'r') as f:
+        data = yaml.safe_load(f)
+    return AgentConfig(**data['AgentConfig'])
+
+config = load_config("config.yaml")
 
 def assistant_schema_append_tools(tool_calls: object, messages: list) -> None:
     tool_call_lst: list = []
@@ -15,18 +41,26 @@ def assistant_schema_append_tools(tool_calls: object, messages: list) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Chatbot")
-    # I want to prompt the user after the loop starts, is neater
-    #parser.add_argument("user_prompt", type=str, help="User prompt")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
+    # vvv Useful in overriding the working directory, otherwise defined in config.yaml
+    parser.add_argument("-w", "--working_dir", type=str, default=config.working_directory, \
+                        help="The directory where tools will run.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Disables chat log output")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     args = parser.parse_args()
 
+    if not args.quiet:
+        history = FileHistory('.history.txt')
+        session = PromptSession(history=history)
+    else:
+        session = PromptSession()
+
     load_dotenv()
-    api_key = os.environ.get("OPENROUTER_API_KEY")
+    api_key = os.environ.get(config.api_key)
     if api_key == None:
-        raise Exception("OPENROUTER_API_KEY not found in .env")
+        raise Exception(f"{config.api_key} not found in .env")
 
     client = OpenAI(
-        base_url="https://openrouter.ai/api/v1",
+        base_url=config.base_url,
         api_key=api_key,
     )
 
@@ -39,7 +73,7 @@ def main():
     # I need a sort of HItL style control-flow
     for api_request in range(20):
 
-        user_prompt: str = input("\n> ")
+        user_prompt: str = session.prompt("\n> ")
         print("")
         if user_prompt == "/q" or user_prompt == "quit":
             exit(0)
@@ -47,11 +81,11 @@ def main():
         messages.append({"role": "user", "content": user_prompt})
 
         response = client.chat.completions.create(
-            model="openrouter/free",
+            model=config.model_name,
             messages=messages,
             tools=available_functions,
             #temperature=0,
-            reasoning_effort="none",
+            reasoning_effort=config.reasoning_effort,
         )
     
         message = response.choices[0].message 
@@ -74,10 +108,12 @@ def main():
                 print(f'Prompt tokens: {response.usage.prompt_tokens}')
                 print(f"Response tokens: {response.usage.completion_tokens}\n")
                 print(f"Response:\n\n{message.content}")
+                if not args.quiet: write_to_chat_log(config.chat_log_file_path, f'Assistant:\n\n{message.content}\n\n')
                 messages.append({"role": "assistant", "content": message.content})
 
             case False, None:
                 print(f"Response:\n\n{message.content}")
+                if not args.quiet: write_to_chat_log(config.chat_log_file_path, f'Assistant:\n\n{message.content}\n\n')
                 messages.append({"role": "assistant", "content": message.content})
 
             case True, list:
@@ -89,17 +125,21 @@ def main():
 
                 for tool_call in message.tool_calls:
                     function_args = json.loads(tool_call.function.arguments or "{}")
-                    result_message = call_function(tool_call, verbose=True)
+                    result_message = call_function(tool_call, args.working_dir, verbose=True)
                     messages.append(result_message)
                     print(f"\nResponse:\n\n{result_message["content"]}")
+                    if not args.quiet: write_to_chat_log(config.chat_log_file_path, \
+                                      f'- Calling function: {tool_call.function.name}({function_args})"):\n\n{result_message["content"]}\n\n')
 
             case False, list:
                 assistant_schema_append_tools(message.tool_calls, messages)
                 for tool_call in message.tool_calls:
                     function_args = json.loads(tool_call.function.arguments or "{}")
-                    result_message = call_function(tool_call)
+                    result_message = call_function(tool_call, args.working_dir)
                     messages.append(result_message)
-                    print(f"Response:\n\n{result_message["content"]}")
+                    print(f"\nResponse:\n\n{result_message["content"]}")
+                    if not args.quiet: write_to_chat_log(config.chat_log_file_path, \
+                                      f'- Calling function: {tool_call.function.name}"):\n\n{result_message["content"]}\n\n')
 
 
 if __name__ == "__main__":
